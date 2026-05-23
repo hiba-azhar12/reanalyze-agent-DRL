@@ -1,4 +1,4 @@
-env: LunarLander-v2
+env: LunarLander-v3
 buffer_type: replay
 buffer_capacity: 50000
 total_steps: 500000
