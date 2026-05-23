@@ -13,11 +13,6 @@ venv/
 .env/
 .venv/
 
-# Résultats et checkpoints (trop lourds pour git)
-results/
-*.pt
-*.pth
-*.ckpt
 
 # Notebooks checkpoints
 .ipynb_checkpoints/
