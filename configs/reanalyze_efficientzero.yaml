@@ -1,0 +1,21 @@
+env: LunarLander-v2
+buffer_type: reanalyze
+buffer_capacity: 50000
+total_steps: 500000
+batch_size: 64
+lr: 0.001
+gamma: 0.99
+epsilon_start: 1.0
+epsilon_end: 0.01
+epsilon_decay: 10000
+target_update: 1000
+hidden_dims: [256, 256]
+dueling: false
+device: cpu
+reanalyze: true
+reanalyze_mode: continuous
+reanalyze_ratio: 0.8
+k_steps: 5
+n_trajectories: 16
+latent_dim: 64
+consistency_loss_weight: 0.1
