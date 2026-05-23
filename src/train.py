@@ -134,7 +134,9 @@ def train(config: Dict, seed: int = 42) -> Dict:
 
         # Ajouter dans le buffer
         if isinstance(buffer, ReanalyzeBuffer):
-            # Pour ReanalyzeBuffer : accumuler l'épisode complet
+            # Pour ReanalyzeBuffer : accumuler uniquement dans current_episode
+            # add_trajectory() appellera super().add() à la fin de l'épisode
+            # NE PAS appeler buffer.add() ici — évite le double ajout
             current_episode.append({
                 'state':      obs.copy(),
                 'action':     action,
@@ -142,8 +144,6 @@ def train(config: Dict, seed: int = 42) -> Dict:
                 'next_state': next_obs.copy(),
                 'done':       done,
             })
-            # Ajouter aussi dans le buffer parent pour les updates normaux
-            buffer.add(obs, action, reward, next_obs, done)
         else:
             buffer.add(obs, action, reward, next_obs, done)
 

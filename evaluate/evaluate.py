@@ -17,6 +17,7 @@ import json
 import argparse
 import numpy as np
 from scipy import stats
+from typing import Dict, List
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 

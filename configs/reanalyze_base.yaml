@@ -11,10 +11,12 @@ target_update: 1000
 hidden_dims: [256, 256]
 dueling: false
 #here
-total_steps: 500000
+#total_steps: 500000
+total_steps: 5000
 device: cpu
 reanalyze: true
 reanalyze_mode: continuous
 reanalyze_ratio: 0.8
 k_steps: 5
+reanalyze_alpha: 0.5
 n_trajectories: 16

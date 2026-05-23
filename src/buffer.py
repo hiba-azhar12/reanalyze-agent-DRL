@@ -129,13 +129,14 @@ class ReplayBuffer:
         batch = [self.buffer[i] for i in indices]
         states, actions, rewards, next_states, dones = zip(*batch)
         return {
-            'states':      np.array(states,      dtype=np.float32),
-            'actions':     np.array(actions,     dtype=np.int64),
-            'rewards':     np.array(rewards,     dtype=np.float32),
-            'next_states': np.array(next_states, dtype=np.float32),
-            'dones':       np.array(dones,       dtype=np.float32),
-            'indices':     indices,
-            'is_weights':  np.ones(batch_size,   dtype=np.float32),
+            'states':             np.array(states,      dtype=np.float32),
+            'actions':            np.array(actions,     dtype=np.int64),
+            'rewards':            np.array(rewards,     dtype=np.float32),
+            'next_states':        np.array(next_states, dtype=np.float32),
+            'dones':              np.array(dones,       dtype=np.float32),
+            'indices':            indices,
+            'is_weights':         np.ones(batch_size,   dtype=np.float32),
+            'reanalyzed_targets': None,  # pas de réanalyse pour DQN vanilla
         }
 
     def __len__(self) -> int:
@@ -215,13 +216,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         states, actions, rewards, next_states, dones = zip(*batch)
 
         return {
-            'states':      np.array(states,      dtype=np.float32),
-            'actions':     np.array(actions,     dtype=np.int64),
-            'rewards':     np.array(rewards,     dtype=np.float32),
-            'next_states': np.array(next_states, dtype=np.float32),
-            'dones':       np.array(dones,       dtype=np.float32),
-            'indices':     np.array(indices),
-            'is_weights':  np.array(is_weights,  dtype=np.float32),
+            'states':             np.array(states,      dtype=np.float32),
+            'actions':            np.array(actions,     dtype=np.int64),
+            'rewards':            np.array(rewards,     dtype=np.float32),
+            'next_states':        np.array(next_states, dtype=np.float32),
+            'dones':              np.array(dones,       dtype=np.float32),
+            'indices':            np.array(indices),
+            'is_weights':         np.array(is_weights,  dtype=np.float32),
+            'reanalyzed_targets': None,  # sera rempli par ReanalyzeBuffer
         }
 
     def update_priorities(self, indices: List[int],
@@ -338,9 +340,8 @@ class ReanalyzeBuffer(PrioritizedReplayBuffer):
         """
         for idx, targets in zip(indices, new_targets):
             if idx in self.trajectories and len(targets) > 0:
-                for t, step in enumerate(self.trajectories[idx]['steps']
-                                         if isinstance(self.trajectories[idx], dict)
-                                         else self.trajectories[idx]):
+                # self.trajectories[idx] est directement une liste de steps (pas un dict)
+                for t, step in enumerate(self.trajectories[idx]):
                     if t < len(targets):
                         step['target'] = float(targets[t])
 

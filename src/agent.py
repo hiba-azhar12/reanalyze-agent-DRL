@@ -119,7 +119,17 @@ class DQNAgent:
         with torch.no_grad():
             next_q_values = self.target_net(next_states).max(dim=1).values
             # Si done=True, pas de récompense future
-            targets = rewards + self.gamma * next_q_values * (1 - dones)
+            targets_fresh = rewards + self.gamma * next_q_values * (1 - dones)
+
+        # Utiliser les targets réanalysées si disponibles dans le batch
+        # α = reanalyze_alpha : 0 = ignorer réanalyse, 1 = utiliser uniquement réanalyse
+        # Par défaut α=0.5 : mixer les deux
+        reanalyze_alpha = self.config.get('reanalyze_alpha', 0.5)
+        if 'reanalyzed_targets' in batch and batch['reanalyzed_targets'] is not None:
+            reanalyzed = torch.FloatTensor(batch['reanalyzed_targets']).to(self.device)
+            targets = reanalyze_alpha * reanalyzed + (1 - reanalyze_alpha) * targets_fresh
+        else:
+            targets = targets_fresh
 
         # TD errors pour mettre à jour les priorités PER
         td_errors = (targets - q_values).detach().cpu().numpy()
