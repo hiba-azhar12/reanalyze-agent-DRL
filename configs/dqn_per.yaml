@@ -1,4 +1,4 @@
-env: LunarLander-v2
+env: LunarLander-v3
 buffer_type: per
 buffer_capacity: 50000
 per_alpha: 0.6

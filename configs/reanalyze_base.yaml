@@ -1,4 +1,4 @@
-env: LunarLander-v2
+env: LunarLander-v3
 buffer_type: reanalyze
 buffer_capacity: 50000
 batch_size: 64
