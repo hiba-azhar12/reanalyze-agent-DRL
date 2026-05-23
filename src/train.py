@@ -246,9 +246,14 @@ def main():
     results = train(config, seed=args.seed)
 
     # Sauvegarder résultats
-    os.makedirs('results', exist_ok=True)
+    
     config_name = os.path.splitext(os.path.basename(args.config))[0]
-    base_path   = f"results/{config_name}_seed{args.seed}"
+
+    results_dir = '/kaggle/working/reanalyze-agent-DRL/results'
+    os.makedirs(results_dir, exist_ok=True)
+
+    base_path = f"{results_dir}/{config_name}_seed{args.seed}"
+
 
     # Sauvegarder les rewards (pour les courbes)
     np.save(f"{base_path}_rewards.npy", results['episode_rewards'])
