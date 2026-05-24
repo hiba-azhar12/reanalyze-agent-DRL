@@ -15,3 +15,4 @@ device: cpu
 reanalyze: false
 use_soft_update: true
 tau: 0.005
+grad_clip: 10.0

@@ -19,3 +19,4 @@ reanalyze: false
 use_soft_update: true
 tau: 0.005
 soft_reset_freq: 0
+grad_clip: 1.0
