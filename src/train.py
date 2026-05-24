@@ -5,14 +5,12 @@ Usage :
     python src/train.py --config configs/dqn_baseline.yaml
     python src/train.py --config configs/reanalyze_base.yaml --seed 42
 
-MODIFICATIONS PAR RAPPORT AU CODE ORIGINAL :
-  - Boucle principale entièrement implémentée (le TODO est résolu)
-  - Gestion correcte des trajectoires pour ReanalyzeBuffer :
-    on accumule les steps d'un épisode avant de les ajouter comme trajectoire
-  - Mode LAZY implémenté : réanalyse juste avant chaque update
-  - Logging étendu : staleness, TD error, coût computationnel par step
-  - Sauvegarde JSON des métriques (pas juste npy) pour evaluate.py
-  - epsilon decay linéaire avec warmup (buffer doit se remplir d'abord)
+CORRECTIONS APPLIQUÉES :
+  [T1,T2] make_buffer() : beta_increment passé depuis config pour PER et ReanalyzeBuffer
+  [T3]    epsilon_decay  : défaut 10000 → 100000 (exploration suffisante)
+  [T4]    warmup         : réanalyse bloquée pendant reanalyze_warmup_steps
+  [T5]    chemin results : chemin relatif au script (plus de path Kaggle codé en dur)
+  [T6]    logging        : affiche 'warmup' si losses encore vides
 """
 
 import os
@@ -53,18 +51,25 @@ def make_buffer(config: Dict):
 
     if buffer_type == 'replay':
         return ReplayBuffer(capacity)
+
     elif buffer_type == 'per':
+        # [T1] beta_increment passé depuis config
         return PrioritizedReplayBuffer(
             capacity,
             alpha=config.get('per_alpha', 0.6),
             beta=config.get('per_beta', 0.4),
+            beta_increment=config.get('per_beta_increment', 0.0001),
         )
+
     elif buffer_type == 'reanalyze':
+        # [T2] idem pour ReanalyzeBuffer
         return ReanalyzeBuffer(
             capacity,
             alpha=config.get('per_alpha', 0.6),
             beta=config.get('per_beta', 0.4),
+            beta_increment=config.get('per_beta_increment', 0.0001),
         )
+
     else:
         raise ValueError(f"Buffer type inconnu : {buffer_type}")
 
@@ -78,13 +83,12 @@ def train(config: Dict, seed: int = 42) -> Dict:
     torch.manual_seed(seed)
 
     env = make_env(config['env'], seed)
-    obs_dim  = env.observation_space.shape[0]
+    obs_dim    = env.observation_space.shape[0]
     action_dim = env.action_space.n
 
     agent  = DQNAgent(obs_dim, action_dim, config)
     buffer = make_buffer(config)
 
-    # Scheduler si mode reanalyze activé
     scheduler = None
     if config.get('reanalyze', False):
         scheduler = ReanalyzeScheduler(
@@ -92,28 +96,33 @@ def train(config: Dict, seed: int = 42) -> Dict:
             config=config,
         )
 
-    # Métriques à tracer
-    episode_rewards     = []
-    all_losses          = []
-    staleness_log       = []   # âge moyen des trajectoires utilisées
-    td_error_log        = []   # erreur TD moyenne avant/après réanalyse
-    step_times          = []   # coût computationnel par step (ms)
-    reanalyze_count     = 0    # nombre de réanalyses effectuées
+    # Métriques
+    episode_rewards = []
+    all_losses      = []
+    staleness_log   = []
+    td_error_log    = []
+    step_times      = []
+    reanalyze_count = 0
 
     # Epsilon decay
     epsilon_start = config.get('epsilon_start', 1.0)
     epsilon_end   = config.get('epsilon_end',   0.01)
-    epsilon_decay = config.get('epsilon_decay', 10000)
+    # [T3] défaut 100000 au lieu de 10000
+    epsilon_decay = config.get('epsilon_decay', 100000)
+
+    # [T4] warmup : pas de réanalyse avant ce nombre de steps
+    reanalyze_warmup = config.get('reanalyze_warmup_steps', 50000)
 
     total_steps = config.get('total_steps', 500000)
 
     obs, _ = env.reset()
-    episode_reward   = 0
-    episode_steps    = 0
-    current_episode  = []   # accumule les steps pour add_trajectory()
+    episode_reward  = 0
+    episode_steps   = 0
+    current_episode = []
 
     print(f"Entraînement — {config['env']} | {total_steps} steps | seed {seed}")
     print(f"Buffer : {config.get('buffer_type')} | Réanalyse : {config.get('reanalyze', False)}")
+    print(f"epsilon_decay : {epsilon_decay} | warmup réanalyse : {reanalyze_warmup}")
     print("-" * 60)
 
     for step in range(total_steps):
@@ -125,18 +134,12 @@ def train(config: Dict, seed: int = 42) -> Dict:
             epsilon_start - (epsilon_start - epsilon_end) * step / epsilon_decay
         )
 
-        # Sélection d'action
         action = agent.select_action(obs, epsilon)
 
-        # Interaction avec l'environnement
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
 
-        # Ajouter dans le buffer
         if isinstance(buffer, ReanalyzeBuffer):
-            # Pour ReanalyzeBuffer : accumuler uniquement dans current_episode
-            # add_trajectory() appellera super().add() à la fin de l'épisode
-            # NE PAS appeler buffer.add() ici — évite le double ajout
             current_episode.append({
                 'state':      obs.copy(),
                 'action':     action,
@@ -147,20 +150,21 @@ def train(config: Dict, seed: int = 42) -> Dict:
         else:
             buffer.add(obs, action, reward, next_obs, done)
 
-        # Update de l'agent
         loss = agent.update(buffer)
         if loss is not None:
             all_losses.append(loss)
 
-        # Réanalyse selon le scheduler
-        if scheduler is not None and len(buffer) > agent.batch_size:
+        # [T4] Réanalyse avec warmup — réseau doit avoir appris avant de réanalyser
+        reanalyze_ready = (
+            scheduler is not None
+            and len(buffer) > agent.batch_size
+            and step > reanalyze_warmup          # ← warmup respecté
+        )
 
+        if reanalyze_ready:
             if scheduler.mode.value == 'lazy':
-                # Mode LAZY : réanalyser juste avant l'update
-                # (déjà géré dans le buffer pour les trajectoires)
                 pass
             elif scheduler.should_reanalyze(agent):
-                # Choisir des trajectoires à réanalyser
                 if isinstance(buffer, ReanalyzeBuffer) and len(buffer.trajectories) > 0:
                     traj_ids = buffer.get_all_trajectory_ids()
                     n_to_reanalyze = min(
@@ -175,13 +179,11 @@ def train(config: Dict, seed: int = 42) -> Dict:
                     )
                     reanalyze_count += 1
 
-        # Fin d'épisode
         episode_reward += reward
         episode_steps  += 1
         obs = next_obs
 
         if done:
-            # Pour ReanalyzeBuffer : ajouter la trajectoire complète
             if isinstance(buffer, ReanalyzeBuffer) and len(current_episode) > 0:
                 buffer.add_trajectory(current_episode)
                 buffer._increment_step()
@@ -192,27 +194,39 @@ def train(config: Dict, seed: int = 42) -> Dict:
             episode_steps  = 0
             obs, _ = env.reset()
 
-        # Coût computationnel par step
         t_end = time.perf_counter()
-        step_times.append((t_end - t_start) * 1000)  # en ms
+        step_times.append((t_end - t_start) * 1000)
 
-        # Logging tous les 10 000 steps
         if step > 0 and step % 10_000 == 0:
-            mean_r   = np.mean(episode_rewards[-50:]) if len(episode_rewards) >= 50 else np.mean(episode_rewards) if episode_rewards else 0
-            mean_t   = np.mean(step_times[-1000:])
-            mean_l   = np.mean(all_losses[-1000:]) if all_losses else 0
+            mean_r = (
+                np.mean(episode_rewards[-50:]) if len(episode_rewards) >= 50
+                else np.mean(episode_rewards) if episode_rewards
+                else 0
+            )
+            mean_t = np.mean(step_times[-1000:])
 
-            # Staleness si ReanalyzeBuffer
+            # [T6] affiche 'warmup' si losses encore vides
+            if all_losses:
+                mean_l = np.mean(all_losses[-1000:])
+                loss_str = f"{mean_l:.4f}"
+            else:
+                loss_str = "warmup"
+
             staleness_info = ""
             if isinstance(buffer, ReanalyzeBuffer):
                 stats = buffer.get_staleness_stats()
                 staleness_log.append(stats['mean_age'])
                 staleness_info = f"| Staleness: {stats['mean_age']:.0f}"
 
+            # Affiche si on est encore en warmup réanalyse
+            warmup_info = ""
+            if scheduler is not None and step <= reanalyze_warmup:
+                warmup_info = f"| Warmup réanalyse ({step}/{reanalyze_warmup})"
+
             print(f"Step {step:7d} | Ep {len(episode_rewards):5d} "
-                  f"| Reward: {mean_r:8.2f} | Loss: {mean_l:.4f} "
+                  f"| Reward: {mean_r:8.2f} | Loss: {loss_str} "
                   f"| ε: {epsilon:.3f} | {mean_t:.2f}ms/step "
-                  f"| Réanalyses: {reanalyze_count} {staleness_info}")
+                  f"| Réanalyses: {reanalyze_count} {staleness_info}{warmup_info}")
 
     env.close()
     print(f"\nFin — {len(episode_rewards)} épisodes | {reanalyze_count} réanalyses")
@@ -245,20 +259,18 @@ def main():
 
     results = train(config, seed=args.seed)
 
-    # Sauvegarder résultats
-    
     config_name = os.path.splitext(os.path.basename(args.config))[0]
 
-    results_dir = '/kaggle/working/reanalyze-agent-DRL/results'
+    # [T5] chemin relatif au script — fonctionne partout (Kaggle, local, Colab)
+    results_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'results'
+    )
     os.makedirs(results_dir, exist_ok=True)
-
     base_path = f"{results_dir}/{config_name}_seed{args.seed}"
 
-
-    # Sauvegarder les rewards (pour les courbes)
     np.save(f"{base_path}_rewards.npy", results['episode_rewards'])
 
-    # Sauvegarder toutes les métriques en JSON
     metrics = {
         'episode_rewards': results['episode_rewards'],
         'staleness_log':   results['staleness_log'],

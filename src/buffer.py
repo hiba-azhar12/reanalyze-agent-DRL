@@ -1,23 +1,14 @@
 """
 buffer.py — Gestion du replay buffer
 
-4 classes dans l'ordre de complexité croissante :
-  1. SumTree              — structure d'arbre pour échantillonnage O(log N)
-  2. ReplayBuffer         — buffer FIFO basique (DQN vanilla)
-  3. PrioritizedReplayBuffer — buffer avec priorités TD (DQN + PER)
-  4. ReanalyzeBuffer      — buffer avec réanalyse et suppression intelligente
-
-MODIFICATIONS PAR RAPPORT AU CODE ORIGINAL :
-  - SumTree : entièrement implémenté (_propagate, _retrieve, add, update, get)
-  - ReplayBuffer : add() et sample() implémentés avec écrasement FIFO
-  - PrioritizedReplayBuffer : add(), sample() avec IS weights, update_priorities()
-  - ReanalyzeBuffer : add_trajectory(), get_trajectories(), update_targets(),
-                      compute_staleness_score(), smart_delete() implémentés
-  - ReanalyzeBuffer stocke aussi les targets TD pour pouvoir les mettre à jour
-  - compute_staleness_score() utilise score composite : âge + TD inverse + redondance
-  - smart_delete() supprime selon score composite au lieu du FIFO
-
-Référence : Schaul et al. (2016), Schrittwieser et al. (2021)
+TOUTES LES CORRECTIONS APPLIQUÉES (fusion Doc35 + Doc36) :
+  [Bug 1] SumTree désync     : idx_before sauvegardé AVANT super().add()
+  [Bug 2] beta_increment     : 0.001 → 0.0001 (beta=1.0 après 6000 steps au lieu de 600)
+  [Bug 3] clamp masquant     : supprimé dans PER.sample() — masquait Bug 1 silencieusement
+  [Fix 4] ReanalyzeBuffer.sample() : ajouté — retourne reanalyzed_targets via _state_to_target
+  [Fix 5] Limite trajectoires : capacity//200 au lieu de capacity//10
+  [Fix 6] update_td_errors() : nouvelle méthode — td_errors mis à jour depuis agent
+  [Fix 7] _state_to_target   : index O(1) état→target, nettoyé dans smart_delete()
 """
 
 import numpy as np
@@ -29,16 +20,6 @@ from typing import Tuple, List, Dict, Optional
 # =============================================================================
 
 class SumTree:
-    """
-    Arbre binaire où chaque nœud = somme de ses enfants.
-    Permet un échantillonnage proportionnel aux priorités en O(log N).
-
-    Structure :
-        - self.tree  : tableau numpy de taille 2*capacity - 1
-        - self.data  : tableau des transitions stockées (feuilles seulement)
-        - self.write : pointeur circulaire sur la prochaine feuille à écrire
-    """
-
     def __init__(self, capacity: int):
         self.capacity = capacity
         self.tree = np.zeros(2 * capacity - 1)
@@ -47,17 +28,14 @@ class SumTree:
         self.n_entries = 0
 
     def _propagate(self, idx: int, change: float):
-        """Propage le changement de priorité vers la racine."""
         parent = (idx - 1) // 2
         self.tree[parent] += change
         if parent != 0:
             self._propagate(parent, change)
 
     def _retrieve(self, idx: int, s: float) -> int:
-        """Trouve la feuille correspondant à la valeur s."""
         left = 2 * idx + 1
         right = left + 1
-        # Si on est une feuille, on retourne cet index
         if left >= len(self.tree):
             return idx
         if s <= self.tree[left]:
@@ -66,12 +44,9 @@ class SumTree:
             return self._retrieve(right, s - self.tree[left])
 
     def total(self) -> float:
-        """Retourne la somme totale des priorités (racine de l'arbre)."""
         return self.tree[0]
 
     def add(self, priority: float, data) -> None:
-        """Ajoute une transition avec sa priorité."""
-        # Index dans le tableau tree (les feuilles commencent à capacity-1)
         idx = self.write + self.capacity - 1
         self.data[self.write] = data
         self.update(idx, priority)
@@ -80,16 +55,11 @@ class SumTree:
             self.n_entries += 1
 
     def update(self, idx: int, priority: float) -> None:
-        """Met à jour la priorité d'une feuille."""
         change = priority - self.tree[idx]
         self.tree[idx] = priority
         self._propagate(idx, change)
 
     def get(self, s: float) -> Tuple[int, float, object]:
-        """
-        Échantillonne une transition pour la valeur s.
-        Retourne (idx_dans_tree, priorité, transition).
-        """
         idx = self._retrieve(0, s)
         data_idx = idx - self.capacity + 1
         return idx, self.tree[idx], self.data[data_idx]
@@ -100,13 +70,6 @@ class SumTree:
 # =============================================================================
 
 class ReplayBuffer:
-    """
-    Buffer FIFO basique pour DQN vanilla.
-    Échantillonnage uniforme.
-
-    Stocke des tuples (state, action, reward, next_state, done).
-    """
-
     def __init__(self, capacity: int):
         self.capacity = capacity
         self.buffer = []
@@ -114,17 +77,12 @@ class ReplayBuffer:
 
     def add(self, state, action: int, reward: float,
             next_state, done: bool) -> None:
-        """Ajoute une transition. Écrase la plus ancienne si plein."""
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
         self.buffer[self.position] = (state, action, reward, next_state, done)
         self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size: int) -> Dict:
-        """
-        Échantillonne batch_size transitions uniformément.
-        Retourne un dict avec clés : states, actions, rewards, next_states, dones
-        """
         indices = np.random.choice(len(self.buffer), batch_size, replace=False)
         batch = [self.buffer[i] for i in indices]
         states, actions, rewards, next_states, dones = zip(*batch)
@@ -136,7 +94,7 @@ class ReplayBuffer:
             'dones':              np.array(dones,       dtype=np.float32),
             'indices':            indices,
             'is_weights':         np.ones(batch_size,   dtype=np.float32),
-            'reanalyzed_targets': None,  # pas de réanalyse pour DQN vanilla
+            'reanalyzed_targets': None,
         }
 
     def __len__(self) -> int:
@@ -149,18 +107,14 @@ class ReplayBuffer:
 
 class PrioritizedReplayBuffer(ReplayBuffer):
     """
-    Buffer avec priorités TD (Prioritized Experience Replay).
-    Hérite de ReplayBuffer, ajoute SumTree + importance sampling weights.
-
-    Référence : Schaul et al. (2016) — Prioritized Experience Replay
+    [Bug 1] add() : idx_before sauvegardé AVANT super().add()
+    [Bug 2] beta_increment : 0.0001 au lieu de 0.001
+    [Bug 3] sample() : clamp supprimé
     """
 
     def __init__(self, capacity: int, alpha: float = 0.6, beta: float = 0.4,
-                 beta_increment: float = 0.001, epsilon: float = 1e-6):
-        """
-        alpha : degré de priorisation (0 = uniforme, 1 = plein PER)
-        beta  : correction IS weights (monte de beta vers 1 pendant l'entraînement)
-        """
+                 beta_increment: float = 0.0001,  # [Bug 2] était 0.001
+                 epsilon: float = 1e-6):
         super().__init__(capacity)
         self.tree = SumTree(capacity)
         self.alpha = alpha
@@ -171,28 +125,20 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
     def add(self, state, action: int, reward: float,
             next_state, done: bool) -> None:
-        """Ajoute avec priorité maximale courante (optimiste)."""
-        # Ajouter dans le buffer parent
+        # [Bug 1] sauvegarder AVANT super().add() qui avance self.position
+        idx_before = self.position
         super().add(state, action, reward, next_state, done)
-        # Ajouter dans le SumTree avec la priorité max (optimiste)
-        # On stocke l'index de position pour retrouver la transition
         priority = self.max_priority ** self.alpha
-        self.tree.add(priority, self.position - 1)
+        self.tree.add(priority, idx_before)
 
     def sample(self, batch_size: int) -> Dict:
-        """
-        Échantillonnage proportionnel aux priorités.
-        Retourne aussi indices (pour update_priorities) et is_weights.
-        """
         self._update_beta()
 
         indices = []
         priorities = []
         batch_indices = []
 
-        # Diviser [0, total] en batch_size segments égaux
         segment = self.tree.total() / batch_size
-
         for i in range(batch_size):
             a = segment * i
             b = segment * (i + 1)
@@ -202,16 +148,14 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             priorities.append(priority)
             batch_indices.append(data_idx)
 
-        # Calcul des IS weights
         N = len(self.buffer)
         sampling_probs = np.array(priorities) / self.tree.total()
-        # Clamp pour éviter division par zéro
         sampling_probs = np.clip(sampling_probs, 1e-8, 1.0)
         is_weights = (N * sampling_probs) ** (-self.beta)
-        is_weights /= is_weights.max()  # Normaliser
+        is_weights /= is_weights.max()
 
-        # Récupérer les transitions
-        batch_indices = [min(max(0, int(i)), len(self.buffer) - 1) for i in batch_indices]
+        # [Bug 3] suppression du clamp min/max qui masquait Bug 1
+        batch_indices = [int(i) for i in batch_indices]
         batch = [self.buffer[i] for i in batch_indices]
         states, actions, rewards, next_states, dones = zip(*batch)
 
@@ -223,19 +167,17 @@ class PrioritizedReplayBuffer(ReplayBuffer):
             'dones':              np.array(dones,       dtype=np.float32),
             'indices':            np.array(indices),
             'is_weights':         np.array(is_weights,  dtype=np.float32),
-            'reanalyzed_targets': None,  # sera rempli par ReanalyzeBuffer
+            'reanalyzed_targets': None,
         }
 
     def update_priorities(self, indices: List[int],
                           td_errors: np.ndarray) -> None:
-        """Met à jour les priorités après un update du réseau."""
         for idx, td_error in zip(indices, td_errors):
             priority = (abs(td_error) + self.epsilon) ** self.alpha
             self.tree.update(int(idx), priority)
             self.max_priority = max(self.max_priority, priority)
 
     def _update_beta(self) -> None:
-        """Incrémente beta vers 1 (appelé à chaque sample)."""
         self.beta = min(1.0, self.beta + self.beta_increment)
 
 
@@ -245,133 +187,111 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
 class ReanalyzeBuffer(PrioritizedReplayBuffer):
     """
-    Buffer avec réanalyse et suppression intelligente.
-    Hérite de PrioritizedReplayBuffer.
-
-    Fonctionnalités supplémentaires :
-    - Stockage des trajectoires complètes (pas juste (s,a,r,s',done))
-    - Calcul du staleness (âge × faible erreur TD)
-    - Suppression intelligente : score = w1*âge + w2*(1/td_error) + w3*redondance
-    - Mise à jour des cibles après réanalyse
-
-    MODIFICATIONS :
-    - trajectories stocke chaque step avec son état, action, reward, next_state,
-      done ET sa target TD courante (recalculée après réanalyse)
-    - timestamps enregistre le step d'ajout pour calculer l'âge
-    - td_errors stocke la dernière erreur TD connue pour la priorisation
-    - smart_delete() utilise score composite au lieu du FIFO
-
-    Référence : Schrittwieser et al. (2021) — MuZero Reanalyze
+    [Fix 4] sample()           : retourne reanalyzed_targets depuis _state_to_target
+    [Fix 5] limite trajectoires: capacity//200 au lieu de capacity//10
+    [Fix 6] update_td_errors() : nouvelle méthode pour vraies erreurs TD
+    [Fix 7] _state_to_target   : index O(1), nettoyé dans smart_delete()
     """
 
     def __init__(self, capacity: int, alpha: float = 0.6, beta: float = 0.4,
-                 beta_increment: float = 0.001,
+                 beta_increment: float = 0.0001,
                  w_age: float = 0.4, w_td: float = 0.4, w_redundancy: float = 0.2):
-        """
-        w_age        : poids du critère âge dans le score de suppression
-        w_td         : poids du critère erreur TD (inverse)
-        w_redundancy : poids du critère redondance (similarité cosine)
-        """
         super().__init__(capacity, alpha, beta, beta_increment)
-        self.trajectories = {}       # idx -> liste de steps {state, action, reward, next_state, done, target}
-        self.timestamps = {}         # idx -> step d'ajout
-        self.td_errors = {}          # idx -> dernière erreur TD connue
+        self.trajectories = {}
+        self.timestamps = {}
+        self.td_errors = {}
         self.current_step = 0
         self.w_age = w_age
         self.w_td = w_td
         self.w_redundancy = w_redundancy
-        self._traj_counter = 0       # compteur unique pour les trajectoires
+        self._traj_counter = 0
+        # [Fix 7] index rapide état→target
+        self._state_to_target = {}
 
     def add_trajectory(self, trajectory: List[Dict]) -> None:
-        """
-        Ajoute une trajectoire complète.
-        trajectory : liste de dicts {state, action, reward, next_state, done}
-
-        Chaque step est aussi ajouté dans le buffer parent (s,a,r,s',done)
-        pour que l'agent puisse faire des updates normaux.
-        La trajectoire complète est stockée dans self.trajectories pour la réanalyse.
-        """
         traj_id = self._traj_counter
         self._traj_counter += 1
 
-        # Stocker la trajectoire avec targets initiales = 0 (seront calculées après)
         steps = []
         for step in trajectory:
+            state = np.array(step['state'], dtype=np.float32)
             steps.append({
-                'state':      np.array(step['state'],      dtype=np.float32),
+                'state':      state,
                 'action':     int(step['action']),
                 'reward':     float(step['reward']),
                 'next_state': np.array(step['next_state'], dtype=np.float32),
                 'done':       bool(step['done']),
-                'target':     0.0,  # sera recalculé par reanalyze()
+                'target':     0.0,
             })
-            # Aussi ajouter chaque transition dans le buffer parent
             super().add(step['state'], step['action'], step['reward'],
                         step['next_state'], step['done'])
 
         self.trajectories[traj_id] = steps
         self.timestamps[traj_id] = self.current_step
-        self.td_errors[traj_id] = 1.0  # priorité initiale optimiste
+        self.td_errors[traj_id] = 1.0
 
-        # Supprimer les plus vieilles trajectoires si buffer trop plein
-        if len(self.trajectories) > self.capacity // 10:
+        # [Fix 5] capacity//200 cohérent avec ~200 steps/épisode LunarLander
+        max_trajectories = max(10, self.capacity // 200)
+        if len(self.trajectories) > max_trajectories:
             self.smart_delete(n=1)
 
+    def sample(self, batch_size: int) -> Dict:
+        # [Fix 4] méthode manquante — retourne les reanalyzed_targets
+        batch = super().sample(batch_size)
+
+        if len(self._state_to_target) == 0:
+            batch['reanalyzed_targets'] = None
+            return batch
+
+        reanalyzed_targets = []
+        found_any = False
+        for state in batch['states']:
+            key = state.tobytes()
+            target = self._state_to_target.get(key, None)
+            if target is not None and target != 0.0:
+                reanalyzed_targets.append(target)
+                found_any = True
+            else:
+                reanalyzed_targets.append(0.0)
+
+        batch['reanalyzed_targets'] = (
+            np.array(reanalyzed_targets, dtype=np.float32) if found_any else None
+        )
+        return batch
+
     def get_trajectories(self, indices: List[int]) -> List[Dict]:
-        """
-        Retourne les trajectoires complètes pour les indices donnés.
-        indices : liste d'IDs de trajectoires (pas indices SumTree)
-        """
         result = []
         for idx in indices:
             if idx in self.trajectories:
                 result.append({'steps': self.trajectories[idx], 'id': idx})
             else:
-                # Trajectoire non trouvée : retourner une trajectoire vide
                 result.append({'steps': [], 'id': idx})
         return result
 
     def update_targets(self, indices: List[int],
                        new_targets: np.ndarray) -> None:
-        """
-        Met à jour les cibles TD après réanalyse.
-        C'est ici que les vieilles targets périmées sont remplacées par des targets fraîches.
-        new_targets : liste d'arrays, un array de targets par trajectoire
-        """
         for idx, targets in zip(indices, new_targets):
             if idx in self.trajectories and len(targets) > 0:
-                # self.trajectories[idx] est directement une liste de steps (pas un dict)
                 for t, step in enumerate(self.trajectories[idx]):
                     if t < len(targets):
                         step['target'] = float(targets[t])
+                        # [Fix 7] mettre à jour l'index rapide
+                        key = step['state'].tobytes()
+                        self._state_to_target[key] = float(targets[t])
+
+    def update_td_errors(self, traj_id: int, td_error: float) -> None:
+        # [Fix 6] appelée depuis train.py après chaque update agent
+        if traj_id in self.td_errors:
+            self.td_errors[traj_id] = float(abs(td_error))
 
     def compute_staleness_score(self, idx: int) -> float:
-        """
-        Score de suppression composite :
-        score = w_age * âge_normalisé
-              + w_td  * (1 / td_error_normalisé)   ← faible erreur = moins utile
-              + w_redundancy * redondance_estimée
-
-        Plus le score est élevé, plus la trajectoire est candidate à la suppression.
-
-        CONTRIBUTION ORIGINALE :
-        Au lieu du FIFO classique (supprimer le plus vieux), on supprime
-        la trajectoire qui apporte le moins d'information :
-        - Vieille ET maîtrisée (faible TD) = inutile même après réanalyse
-        - Similaire aux autres (redondante) = n'apporte pas de diversité
-        """
         if idx not in self.trajectories:
             return 0.0
-
-        # Âge normalisé [0, 1]
         age = self.current_step - self.timestamps.get(idx, 0)
         max_age = max(1, self.current_step)
         age_score = age / max_age
-
-        # Score TD inverse : faible erreur TD = moins utile à réapprendre
         td_err = self.td_errors.get(idx, 1.0)
         td_score = 1.0 / (td_err + 1e-6)
-        # Normaliser entre 0 et 1
         all_td = [1.0 / (e + 1e-6) for e in self.td_errors.values()]
         if len(all_td) > 1:
             td_min, td_max = min(all_td), max(all_td)
@@ -379,38 +299,26 @@ class ReanalyzeBuffer(PrioritizedReplayBuffer):
                 td_score = (td_score - td_min) / (td_max - td_min)
             else:
                 td_score = 0.0
-
-        # Redondance estimée : proportion de trajectoires avec âge similaire
-        # (proxy simple — une implémentation avancée utiliserait un arbre KD)
         ages = [self.current_step - self.timestamps.get(i, 0) for i in self.trajectories]
         if len(ages) > 1:
             similar = sum(1 for a in ages if abs(a - age) < max_age * 0.1)
             redundancy_score = similar / len(ages)
         else:
             redundancy_score = 0.0
-
         return (self.w_age * age_score
                 + self.w_td * td_score
                 + self.w_redundancy * redundancy_score)
 
     def smart_delete(self, n: int = 1) -> None:
-        """
-        Supprime les n trajectoires avec le score de suppression le plus élevé.
-        Alternative intelligente au FIFO classique.
-
-        DIFFÉRENCE AVEC FIFO :
-        FIFO supprime toujours le plus vieux.
-        smart_delete supprime celui qui apporte le moins d'information,
-        même si ce n'est pas le plus vieux.
-        """
         if len(self.trajectories) == 0:
             return
-
-        scores = {idx: self.compute_staleness_score(idx)
-                  for idx in self.trajectories}
-        # Trier par score décroissant et supprimer les n premiers
+        scores = {idx: self.compute_staleness_score(idx) for idx in self.trajectories}
         to_delete = sorted(scores, key=scores.get, reverse=True)[:n]
         for idx in to_delete:
+            # [Fix 7] nettoyer aussi _state_to_target
+            if idx in self.trajectories:
+                for step in self.trajectories[idx]:
+                    self._state_to_target.pop(step['state'].tobytes(), None)
             del self.trajectories[idx]
             if idx in self.timestamps:
                 del self.timestamps[idx]
@@ -418,14 +326,9 @@ class ReanalyzeBuffer(PrioritizedReplayBuffer):
                 del self.td_errors[idx]
 
     def get_all_trajectory_ids(self) -> List[int]:
-        """Retourne tous les IDs de trajectoires dans le buffer."""
         return list(self.trajectories.keys())
 
     def get_staleness_stats(self) -> Dict:
-        """
-        Retourne des statistiques sur le staleness du buffer.
-        Utilisé dans evaluate.py pour la métrique staleness moyen.
-        """
         if not self.timestamps:
             return {'mean_age': 0, 'max_age': 0, 'n_trajectories': 0}
         ages = [self.current_step - t for t in self.timestamps.values()]

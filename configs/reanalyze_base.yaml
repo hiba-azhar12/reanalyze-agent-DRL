@@ -1,17 +1,20 @@
 env: LunarLander-v3
 buffer_type: reanalyze
-buffer_capacity: 50000
+buffer_capacity: 100000
 batch_size: 64
-lr: 0.001
+lr: 0.0001
 gamma: 0.99
+per_beta: 0.5
+per_alpha: 0.5
+per_beta_increment: 0.0001
+
 epsilon_start: 1.0
-epsilon_end: 0.01
-epsilon_decay: 10000
+epsilon_end: 0.05
+epsilon_decay: 200000
 target_update: 1000
 hidden_dims: [256, 256]
 dueling: false
 #here
-#total_steps: 500000
 total_steps: 500000
 device: cpu
 reanalyze: true
@@ -20,3 +23,7 @@ reanalyze_ratio: 0.8
 k_steps: 5
 reanalyze_alpha: 0.5
 n_trajectories: 16
+reanalyze_warmup_steps: 50000
+use_soft_update: false         
+tau: 0.005                     
+soft_reset_freq: 0     
