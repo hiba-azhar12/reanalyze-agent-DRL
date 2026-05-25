@@ -3,12 +3,12 @@ buffer_type: replay
 buffer_capacity: 50000
 total_steps: 500000
 batch_size: 64
-lr: 0.001
+lr: 0.0003
 gamma: 0.99
 epsilon_start: 1.0
-epsilon_end: 0.01
-epsilon_decay: 100000
-target_update: 500
+epsilon_end: 0.05
+epsilon_decay: 150000
+target_update: 1000
 hidden_dims: [256, 256]
 dueling: false
 device: cpu
@@ -16,3 +16,4 @@ reanalyze: false
 use_soft_update: true
 tau: 0.005
 grad_clip: 10.0
+soft_reset_freq: 0
