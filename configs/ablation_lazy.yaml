@@ -1,6 +1,6 @@
 # Phase 2 — timing=lazy
 # Fixé : k=5, ratio=best (à ajuster après phase 1)
-env: LunarLander-v2
+env: LunarLander-v3
 buffer_type: reanalyze
 buffer_capacity: 100000
 batch_size: 64

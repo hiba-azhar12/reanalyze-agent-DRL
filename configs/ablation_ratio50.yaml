@@ -1,6 +1,6 @@
 # Phase 1 — ratio=50%
 # Fixé : k=5, timing=continu
-env: LunarLander-v2
+env: LunarLander-v3
 buffer_type: reanalyze
 buffer_capacity: 100000
 batch_size: 64
