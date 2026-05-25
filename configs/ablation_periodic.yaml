@@ -1,0 +1,30 @@
+# Phase 2 — timing=périodique
+# Fixé : k=5, ratio=best (à ajuster après phase 1)
+env: LunarLander-v2
+buffer_type: reanalyze
+buffer_capacity: 100000
+batch_size: 64
+lr: 0.0001
+gamma: 0.99
+per_alpha: 0.5
+per_beta: 0.5
+per_beta_increment: 0.0001
+epsilon_start: 1.0
+epsilon_end: 0.05
+epsilon_decay: 200000
+target_update: 500
+hidden_dims: [256, 256]
+dueling: false
+total_steps: 500000
+device: cpu
+reanalyze_alpha: 0.8
+n_trajectories: 16
+reanalyze_warmup_steps: 50000
+use_soft_update: true
+tau: 0.005
+soft_reset_freq: 0
+reanalyze: true
+reanalyze_mode: periodic
+reanalyze_ratio: 0.8
+k_steps: 5
+period: 1000
