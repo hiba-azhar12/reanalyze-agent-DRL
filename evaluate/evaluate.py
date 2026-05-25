@@ -166,7 +166,7 @@ def wilcoxon_test(name_a: str, scores_a: list, name_b: str, scores_b: list) -> D
             'skipped':        False,
             'statistic':      float(stat),
             'p_value':        float(p_value),
-            'significant':    p_value < 0.05,
+            'significant':    bool(p_value < 0.05),
             'interpretation': (
                 f"✅ Différence significative (p={p_value:.4f} < 0.05)"
                 if p_value < 0.05
@@ -253,8 +253,17 @@ def main():
         'results':  all_results,
         'wilcoxon': wilcoxon_results,
     }
+
+    class NumpyEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, np.integer): return int(obj)
+            if isinstance(obj, np.floating): return float(obj)
+            if isinstance(obj, np.ndarray): return obj.tolist()
+            if isinstance(obj, np.bool_): return bool(obj)
+            return super().default(obj)
+
     with open(output_path, 'w') as f:
-        json.dump(output, f, indent=2)
+        json.dump(output, f, indent=2, cls=NumpyEncoder)
 
     print(f"\n✅ Résultats sauvegardés : {output_path}")
 
