@@ -135,3 +135,96 @@ class DQNNetwork(nn.Module):
         """
         return self.forward(obs).max(dim=-1, keepdim=True).values
 
+# =============================================================================
+# LatentModel — encodeur + modèle de dynamique (EfficientZero / DreamerV3)
+# =============================================================================
+
+class LatentModel(nn.Module):
+    """
+    Encodeur d'observations + modèle de dynamique dans l'espace latent.
+
+    Utilisé par :
+      - EfficientZero : consistency_loss pour entraîner la cohérence du modèle
+      - DreamerV3     : générer des trajectoires imaginées depuis des états réels
+
+    Architecture :
+      encode()              : obs  → latent  (MLP)
+      predict_next_latent() : (latent, action_onehot) → latent suivant prédit
+    """
+
+    def __init__(self, obs_dim: int, action_dim: int, latent_dim: int = 64):
+        super().__init__()
+        self.obs_dim    = obs_dim
+        self.action_dim = action_dim
+        self.latent_dim = latent_dim
+
+        # Encodeur : observation → espace latent
+        self.encoder = nn.Sequential(
+            nn.Linear(obs_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim),
+        )
+
+        # Modèle de dynamique : (latent + action_onehot) → latent suivant
+        self.dynamics = nn.Sequential(
+            nn.Linear(latent_dim + action_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, latent_dim),
+        )
+
+    def encode(self, obs: torch.Tensor) -> torch.Tensor:
+        """obs (batch, obs_dim) → latent (batch, latent_dim)"""
+        return self.encoder(obs)
+
+    def predict_next_latent(self, latent: torch.Tensor,
+                            action_onehot: torch.Tensor) -> torch.Tensor:
+        """
+        (latent, action_onehot) → latent prédit au pas suivant.
+
+        Args :
+            latent       : (batch, latent_dim)
+            action_onehot: (batch, action_dim) — vecteur one-hot de l'action
+        Returns :
+            next_latent  : (batch, latent_dim)
+        """
+        x = torch.cat([latent, action_onehot], dim=-1)
+        return self.dynamics(x)
+
+
+# =============================================================================
+# consistency_loss — pénalise l'incohérence du modèle de dynamique
+# =============================================================================
+
+def consistency_loss(next_obs: torch.Tensor,
+                     latent_t: torch.Tensor,
+                     action_onehot: torch.Tensor,
+                     latent_model: LatentModel) -> torch.Tensor:
+    """
+    Loss de consistance latente (EfficientZero).
+
+    Objectif : le latent prédit par le modèle de dynamique doit correspondre
+    au latent réellement encodé depuis l'observation suivante.
+
+        L = MSE( predict_next_latent(z_t, a_t),  sg(encode(o_{t+1})) )
+
+    sg() = stop_gradient — on ne propage pas le gradient à travers la cible.
+    Cela évite l'effondrement (mode collapse) où les deux côtés convergent
+    vers zéro ensemble.
+
+    Args :
+        next_obs     : observations au pas t+1, shape (batch, obs_dim)
+        latent_t     : latents encodés au pas t,  shape (batch, latent_dim)
+        action_onehot: actions one-hot au pas t,  shape (batch, action_dim)
+        latent_model : instance de LatentModel
+
+    Returns :
+        loss scalaire
+    """
+    # Latent prédit par le modèle de dynamique (avec gradient)
+    predicted_next = latent_model.predict_next_latent(latent_t, action_onehot)
+
+    # Latent réel encodé depuis o_{t+1} — stop gradient (cible fixe)
+    with torch.no_grad():
+        target_next = latent_model.encode(next_obs)
+
+    return F.mse_loss(predicted_next, target_next)
