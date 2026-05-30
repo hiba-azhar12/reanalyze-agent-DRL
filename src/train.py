@@ -31,6 +31,8 @@ from networks import DQNNetwork
 from agent import DQNAgent
 from reanalyze import reanalyze
 from scheduler import ReanalyzeScheduler
+from reanalyze import reanalyze_tdmpc2
+from reanalyze import reanalyze_dreamer
 
 
 def load_config(path: str) -> Dict:
@@ -149,10 +151,27 @@ def train(config: Dict, seed: int = 42) -> Dict:
             selected = np.random.choice(traj_ids, n_to_reanalyze, replace=False)
             traj_len = len(buffer.trajectories.get(int(selected[0]), []))
             k = scheduler.get_k_steps(traj_length=traj_len)
-            reanalyze(
-                buffer, agent.online_net, selected.tolist(),
-                k, config['gamma'], config.get('device', 'cpu')
-            )
+
+            #here DreamerV3 & TD-MPC2 & reanalyse
+            if config.get('use_tdmpc2', False):
+                reanalyze_tdmpc2(
+                    buffer, agent.online_net,
+                    selected.tolist(), k, config['gamma'],
+                    n_sequences=config.get('n_sequences', 10),
+                    device=config.get('device', 'cpu')
+                )
+            elif config.get('use_dreamer', False):
+                reanalyze_dreamer(
+                    buffer, agent.online_net, agent.latent_model,
+                    selected.tolist(), k, config['gamma'],
+                    n_imagined=config.get('n_imagined', 5),
+                    mix_ratio=config.get('mix_ratio', 0.3),
+                    device=config.get('device', 'cpu')
+                )
+            else:
+                reanalyze(buffer, agent.online_net, selected.tolist(),
+                        k, config['gamma'], config.get('device', 'cpu'))
+            #=====================================
             reanalyze_count += 1
 
         # [C1] décomposer le tuple retourné par agent.update()
@@ -178,10 +197,28 @@ def train(config: Dict, seed: int = 42) -> Dict:
                 selected = np.random.choice(traj_ids, n_to_reanalyze, replace=False)
                 traj_len = len(buffer.trajectories.get(int(selected[0]), []))
                 k = scheduler.get_k_steps(traj_length=traj_len)  # [S3]
-                reanalyze(
-                    buffer, agent.online_net, selected.tolist(),
-                    k, config['gamma'], config.get('device', 'cpu')
-                )
+
+                #here DreamerV3 & TD-MPC2 & reanalyse
+                if config.get('use_tdmpc2', False):
+                    reanalyze_tdmpc2(
+                        buffer, agent.online_net,
+                        selected.tolist(), k, config['gamma'],
+                        n_sequences=config.get('n_sequences', 10),
+                        device=config.get('device', 'cpu')
+                    )
+                elif config.get('use_dreamer', False):
+                    reanalyze_dreamer(
+                        buffer, agent.online_net, agent.latent_model,
+                        selected.tolist(), k, config['gamma'],
+                        n_imagined=config.get('n_imagined', 5),
+                        mix_ratio=config.get('mix_ratio', 0.3),
+                        device=config.get('device', 'cpu')
+                    )
+                else:
+                    reanalyze(buffer, agent.online_net, selected.tolist(),
+                            k, config['gamma'], config.get('device', 'cpu'))
+                
+                #=========================
                 reanalyze_count += 1
 
         episode_reward += reward

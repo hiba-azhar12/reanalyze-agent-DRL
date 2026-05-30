@@ -67,6 +67,28 @@ class DQNAgent:
         # DQN vanilla : grad_clip=10.0 (original Mnih et al.)
         # PER/Reanalyze : grad_clip=1.0 (plus stable avec IS weights)
         self.grad_clip = config.get('grad_clip', 10.0)
+        
+        ##here efficientZero
+        self.use_consistency = config.get('use_consistency_loss', False)
+        self.consistency_weight = config.get('consistency_loss_weight', 0.1)
+
+        ##==================================
+        ##here DreamerV3
+        self.use_dreamer = config.get('use_dreamer', False)
+        self.latent_model = None
+        if self.use_consistency or self.use_dreamer:
+            from networks import LatentModel
+            latent_dim = config.get('latent_dim', 64)
+            self.latent_model = LatentModel(
+                obs_dim, action_dim, latent_dim=latent_dim
+            ).to(self.device)
+            # Optimizer inclut toujours latent_model si présent
+            self.optimizer = optim.Adam(
+                list(self.online_net.parameters()) +
+                list(self.latent_model.parameters()),
+                lr=config.get('lr', 1e-3)
+            )
+        ##================================
 
     def select_action(self, obs: np.ndarray, epsilon: float) -> int:
         if np.random.random() < epsilon:
@@ -111,10 +133,26 @@ class DQNAgent:
 
         loss = (is_weights * (q_values - targets) ** 2).mean()
 
+        #here efficientZero
+        if self.use_consistency and batch.get('next_states') is not None:
+            from networks import consistency_loss
+            latent_t = self.latent_model.encode(states)
+            actions_onehot = torch.zeros(
+                states.shape[0], self.action_dim
+            ).to(self.device)
+            actions_onehot.scatter_(1, actions.unsqueeze(1), 1.0)
+            cons_loss = consistency_loss(
+                next_states, latent_t, actions_onehot, self.latent_model
+            )
+            loss = loss + self.consistency_weight * cons_loss
+        #==========================================
         self.optimizer.zero_grad()
         loss.backward()
         # [C1] grad_clip depuis config — pas hardcode
-        nn.utils.clip_grad_norm_(self.online_net.parameters(), max_norm=self.grad_clip)
+        params_to_clip = list(self.online_net.parameters())
+        if self.latent_model is not None:
+            params_to_clip += list(self.latent_model.parameters())
+        nn.utils.clip_grad_norm_(params_to_clip, max_norm=self.grad_clip)
         self.optimizer.step()
 
         if hasattr(buffer, 'update_priorities'):

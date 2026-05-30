@@ -125,3 +125,83 @@ def reanalyze(buffer, network: torch.nn.Module,
         # Mettre à jour les cibles dans le buffer
         buffer.update_targets(indices, new_targets_list)
 
+
+##here DreamerV3
+def reanalyze_dreamer(buffer, network, latent_model,
+                      indices, k_steps, gamma,
+                      n_imagined=5, mix_ratio=0.3, device='cpu'):
+    trajectories = buffer.get_trajectories(indices)
+    
+    with torch.no_grad():
+        new_targets_list = []
+        for traj_data in trajectories:
+            steps = traj_data.get('steps', [])
+            if len(steps) == 0:
+                new_targets_list.append(np.array([]))
+                continue
+            
+            states = np.array([s['state'] for s in steps], dtype=np.float32)
+            states_tensor = torch.FloatTensor(states).to(device)
+            rewards = [s['reward'] for s in steps]
+            
+            # Cibles réelles
+            values_real = network.get_value(states_tensor).squeeze(-1)
+            targets_real = compute_nstep_targets(rewards, values_real, k_steps, gamma)
+            
+            # Cibles "imaginées" — perturbation gaussienne des états
+            # Simplifié : on ne peut pas décoder des latents vers observations
+            imagined_targets = []
+            for _ in range(n_imagined):
+                noise = torch.randn_like(states_tensor) * 0.1
+                states_noisy = states_tensor + noise
+                values_noisy = network.get_value(states_noisy).squeeze(-1)
+                t = compute_nstep_targets(rewards, values_noisy, k_steps, gamma)
+                imagined_targets.append(t)
+            
+            targets_imagined = np.mean(imagined_targets, axis=0)
+            targets_final = (1 - mix_ratio) * targets_real + mix_ratio * targets_imagined
+            new_targets_list.append(targets_final)
+        
+        buffer.update_targets(indices, new_targets_list)
+
+#here TD-MPC2
+def reanalyze_tdmpc2(buffer, network, indices, k_steps, gamma,
+                     n_sequences=10, device='cpu'):
+    
+    trajectories = buffer.get_trajectories(indices)
+    
+    with torch.no_grad():
+        new_targets_list = []
+        
+        for traj_data in trajectories:
+            steps = traj_data.get('steps', [])
+            if len(steps) == 0:
+                new_targets_list.append(np.array([]))
+                continue
+            
+            states = np.array([s['state'] for s in steps], dtype=np.float32)
+            states_tensor = torch.FloatTensor(states).to(device)
+            rewards = [s['reward'] for s in steps]
+            T = len(steps)
+            
+            # Pour chaque état, évaluer N séquences d'actions
+            best_values = np.zeros(T, dtype=np.float32)
+            
+            for _ in range(n_sequences):
+                # Séquence d'actions aléatoires de longueur k_steps
+                q_values = network(states_tensor)  # (T, action_dim)
+                # Prendre une action aléatoire différente à chaque séquence
+                rand_actions = torch.randint(
+                    0, q_values.shape[1], (T,)
+                ).to(device)
+                seq_values = q_values.gather(
+                    1, rand_actions.unsqueeze(1)
+                ).squeeze(1).cpu().numpy()
+                # Garder la meilleure valeur pour chaque état
+                best_values = np.maximum(best_values, seq_values)
+            
+            # Calculer les cibles avec les meilleures valeurs trouvées
+            targets = compute_nstep_targets(rewards, best_values, k_steps, gamma)
+            new_targets_list.append(targets)
+        
+        buffer.update_targets(indices, new_targets_list)
