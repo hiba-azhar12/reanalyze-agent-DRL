@@ -41,6 +41,12 @@ def load_config(path: str) -> Dict:
 
 
 def make_env(env_name: str, seed: int) -> gym.Env:
+    # Enregistrement des environnements custom
+    if env_name == 'EnergyBuilding-v0':
+        import sys, os
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__))))
+        from envs.energy_building_env import register_energy_env
+        register_energy_env()
     env = gym.make(env_name)
     env.reset(seed=seed)
     return env
