@@ -13,7 +13,7 @@ epsilon_decay: 50000
 target_update: 500
 hidden_dims: [256, 256]
 dueling: false
-total_steps: 200000
+total_steps: 500000
 device: cuda
 reanalyze: true
 reanalyze_mode: continuous
