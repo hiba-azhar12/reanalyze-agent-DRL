@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import gymnasium as gym
 
+EPISODE_LENGTH = 730
 
 class EnergyBuildingEnv(gym.Env):
     BASE_URL = (
@@ -9,7 +10,6 @@ class EnergyBuildingEnv(gym.Env):
         "CityLearn/v2.1.0/citylearn/data/citylearn_challenge_2022_phase_1/"
     )
 
-    # Valeurs max réelles du dataset pour normalisation
     MAX_CONSUMPTION = 7.99
     MAX_SOLAR       = 976.25
     MAX_CARBON      = 0.28
@@ -33,7 +33,6 @@ class EnergyBuildingEnv(gym.Env):
         self.battery_efficiency = battery_efficiency
         self.n_steps            = len(self.df)
 
-        # État : consommation, solaire, batterie, heure, mois, carbon, prix actuel, prix 24h
         self.observation_space = gym.spaces.Box(
             low=0.0, high=1.0, shape=(8,), dtype=np.float32
         )
@@ -69,7 +68,7 @@ class EnergyBuildingEnv(gym.Env):
     def reset(self, seed=None, **kwargs):
         if seed is not None:
             np.random.seed(seed)
-        self.step_idx       = 0
+        self.step_idx       = np.random.randint(0, self.n_steps - EPISODE_LENGTH)
         self.battery_charge = self.battery_capacity / 2
         return self._get_obs(), {}
 
@@ -94,13 +93,12 @@ class EnergyBuildingEnv(gym.Env):
 
         net_consumption = max(0.0, net_consumption)
 
-        # Reward simple et clair
         peak_penalty  = -2.0 * net_consumption if net_consumption > 3.0 else 0.0
         price_penalty = -price * net_consumption
         reward        = -net_consumption + peak_penalty + price_penalty
 
         self.step_idx += 1
-        done = self.step_idx >= self.n_steps - 1
+        done = self.step_idx >= EPISODE_LENGTH
 
         return self._get_obs(), reward, done, False, {}
 
