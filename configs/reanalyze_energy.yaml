@@ -17,11 +17,11 @@ total_steps: 500000
 device: cuda
 reanalyze: true
 reanalyze_mode: continuous
-reanalyze_ratio: 0.8
-k_steps: 5
+reanalyze_ratio: 0.3
+k_steps: 3
 reanalyze_alpha: 0.8
 n_trajectories: 16
-reanalyze_warmup_steps: 20000
+reanalyze_warmup_steps: 50000
 use_soft_update: true
 tau: 0.005
 soft_reset_freq: 0
