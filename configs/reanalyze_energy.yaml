@@ -1,6 +1,6 @@
 env: EnergyBuilding-v0
 buffer_type: reanalyze
-buffer_capacity: 100000
+buffer_capacity: 10000
 per_alpha: 0.5
 per_beta: 0.5
 per_beta_increment: 0.0001
