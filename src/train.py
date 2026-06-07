@@ -1,18 +1,3 @@
-"""
-train.py — Boucle d'entraînement principale
-
-CORRECTIONS APPLIQUÉES :
-  [T1,T2] make_buffer()  : beta_increment passé depuis config
-  [T3]    epsilon_decay  : défaut 100000
-  [T4]    warmup         : réanalyse bloquée pendant reanalyze_warmup_steps
-  [T5]    chemin results : chemin relatif au script
-  [T6]    logging        : affiche 'warmup' si losses vides
-  [C1]    agent.update() : décompose tuple (loss, mean_td_error)
-  [C2]    td_error_log   : rempli à chaque update
-  [C3]    mode LAZY      : appelle vraiment reanalyze() juste avant update
-  [C4]    td_error_log   : sauvegardé dans le JSON
-"""
-
 import os
 import sys
 import yaml
@@ -41,7 +26,6 @@ def load_config(path: str) -> Dict:
 
 
 def make_env(env_name: str, seed: int) -> gym.Env:
-    # Enregistrement des environnements custom
     if env_name == 'EnergyBuilding-v0':
         import sys, os
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__))))
@@ -60,7 +44,6 @@ def make_buffer(config: Dict):
         return ReplayBuffer(capacity)
 
     elif buffer_type == 'per':
-        # [T1] beta_increment depuis config
         return PrioritizedReplayBuffer(
             capacity,
             alpha=config.get('per_alpha', 0.6),
@@ -102,15 +85,15 @@ def train(config: Dict, seed: int = 42) -> Dict:
     episode_rewards = []
     all_losses      = []
     staleness_log   = []
-    td_error_log    = []   # [C2] sera rempli à chaque update
+    td_error_log    = []   
     step_times      = []
     reanalyze_count = 0
 
     epsilon_start = config.get('epsilon_start', 1.0)
     epsilon_end   = config.get('epsilon_end',   0.01)
-    epsilon_decay = config.get('epsilon_decay', 100000)  # [T3]
+    epsilon_decay = config.get('epsilon_decay', 100000)  
 
-    reanalyze_warmup = config.get('reanalyze_warmup_steps', 50000)  # [T4]
+    reanalyze_warmup = config.get('reanalyze_warmup_steps', 50000)  
     total_steps      = config.get('total_steps', 500000)
 
     obs, _ = env.reset()
@@ -146,7 +129,7 @@ def train(config: Dict, seed: int = 42) -> Dict:
         else:
             buffer.add(obs, action, reward, next_obs, done)
 
-        # [C3] Mode LAZY — réanalyse juste avant l'update
+       
         if (scheduler is not None
                 and scheduler.mode.value == 'lazy'
                 and step > reanalyze_warmup
@@ -158,7 +141,7 @@ def train(config: Dict, seed: int = 42) -> Dict:
             traj_len = len(buffer.trajectories.get(int(selected[0]), []))
             k = scheduler.get_k_steps(traj_length=traj_len)
 
-            #here DreamerV3 & TD-MPC2 & reanalyse
+            #here DreamerV3 / TD-MPC2 / reanalyse
             if config.get('use_tdmpc2', False):
                 reanalyze_tdmpc2(
                     buffer, agent.online_net,
@@ -180,14 +163,13 @@ def train(config: Dict, seed: int = 42) -> Dict:
             #=====================================
             reanalyze_count += 1
 
-        # [C1] décomposer le tuple retourné par agent.update()
+        
         result = agent.update(buffer)
         if result is not None:
             loss, mean_td_error = result
             all_losses.append(loss)
-            td_error_log.append(mean_td_error)  # [C2] rempli ici
+            td_error_log.append(mean_td_error)  
 
-        # [T4] Réanalyse avec warmup pour les modes non-LAZY
         reanalyze_ready = (
             scheduler is not None
             and scheduler.mode.value != 'lazy'
@@ -202,9 +184,9 @@ def train(config: Dict, seed: int = 42) -> Dict:
                 )
                 selected = np.random.choice(traj_ids, n_to_reanalyze, replace=False)
                 traj_len = len(buffer.trajectories.get(int(selected[0]), []))
-                k = scheduler.get_k_steps(traj_length=traj_len)  # [S3]
+                k = scheduler.get_k_steps(traj_length=traj_len) 
 
-                #here DreamerV3 & TD-MPC2 & reanalyse
+                #here DreamerV3 / TD-MPC2 / reanalyse
                 if config.get('use_tdmpc2', False):
                     reanalyze_tdmpc2(
                         buffer, agent.online_net,
@@ -252,7 +234,7 @@ def train(config: Dict, seed: int = 42) -> Dict:
             )
             mean_t = np.mean(step_times[-1000:])
 
-            # [T6]
+        
             if all_losses:
                 mean_l   = np.mean(all_losses[-1000:])
                 mean_td  = np.mean(td_error_log[-1000:]) if td_error_log else 0
@@ -308,7 +290,6 @@ def main():
 
     config_name = os.path.splitext(os.path.basename(args.config))[0]
 
-    # [T5] chemin relatif — fonctionne sur Kaggle, Colab, local
     results_dir = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         'results'
@@ -321,7 +302,7 @@ def main():
     metrics = {
         'episode_rewards': results['episode_rewards'],
         'staleness_log':   results['staleness_log'],
-        'td_error_log':    results['td_error_log'],    # [C4] ajouté
+        'td_error_log':    results['td_error_log'],    
         'reanalyze_count': results['reanalyze_count'],
         'mean_step_time':  float(np.mean(results['step_times'])) if results['step_times'] else 0,
         'config':          config,

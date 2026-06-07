@@ -1,22 +1,9 @@
-"""
-buffer.py — Gestion du replay buffer
-
-TOUTES LES CORRECTIONS APPLIQUÉES (fusion Doc35 + Doc36) :
-  [Bug 1] SumTree désync     : idx_before sauvegardé AVANT super().add()
-  [Bug 2] beta_increment     : 0.001 → 0.0001 (beta=1.0 après 6000 steps au lieu de 600)
-  [Bug 3] clamp masquant     : supprimé dans PER.sample() — masquait Bug 1 silencieusement
-  [Fix 4] ReanalyzeBuffer.sample() : ajouté — retourne reanalyzed_targets via _state_to_target
-  [Fix 5] Limite trajectoires : capacity//200 au lieu de capacity//10
-  [Fix 6] update_td_errors() : nouvelle méthode — td_errors mis à jour depuis agent
-  [Fix 7] _state_to_target   : index O(1) état→target, nettoyé dans smart_delete()
-"""
-
 import numpy as np
 from typing import Tuple, List, Dict, Optional
 
 
 # =============================================================================
-# Classe 1 — SumTree
+#  SumTree
 # =============================================================================
 
 class SumTree:
@@ -66,7 +53,7 @@ class SumTree:
 
 
 # =============================================================================
-# Classe 2 — ReplayBuffer
+# ReplayBuffer
 # =============================================================================
 
 class ReplayBuffer:
@@ -102,16 +89,11 @@ class ReplayBuffer:
 
 
 # =============================================================================
-# Classe 3 — PrioritizedReplayBuffer
+# PrioritizedReplayBuffer
 # =============================================================================
 
 class PrioritizedReplayBuffer(ReplayBuffer):
-    """
-    [Bug 1] add() : idx_before sauvegardé AVANT super().add()
-    [Bug 2] beta_increment : 0.0001 au lieu de 0.001
-    [Bug 3] sample() : clamp supprimé
-    """
-
+   
     def __init__(self, capacity: int, alpha: float = 0.6, beta: float = 0.4,
                  beta_increment: float = 0.0001,  # [Bug 2] était 0.001
                  epsilon: float = 1e-6):
@@ -125,7 +107,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
     def add(self, state, action: int, reward: float,
             next_state, done: bool) -> None:
-        # [Bug 1] sauvegarder AVANT super().add() qui avance self.position
+        
         idx_before = self.position
         super().add(state, action, reward, next_state, done)
         priority = self.max_priority ** self.alpha
@@ -154,7 +136,7 @@ class PrioritizedReplayBuffer(ReplayBuffer):
         is_weights = (N * sampling_probs) ** (-self.beta)
         is_weights /= is_weights.max()
 
-        # [Bug 3] suppression du clamp min/max qui masquait Bug 1
+        
         batch_indices = [int(i) for i in batch_indices]
         batch = [self.buffer[i] for i in batch_indices]
         states, actions, rewards, next_states, dones = zip(*batch)
@@ -182,16 +164,10 @@ class PrioritizedReplayBuffer(ReplayBuffer):
 
 
 # =============================================================================
-# Classe 4 — ReanalyzeBuffer
+# ReanalyzeBuffer
 # =============================================================================
 
 class ReanalyzeBuffer(PrioritizedReplayBuffer):
-    """
-    [Fix 4] sample()           : retourne reanalyzed_targets depuis _state_to_target
-    [Fix 5] limite trajectoires: capacity//200 au lieu de capacity//10
-    [Fix 6] update_td_errors() : nouvelle méthode pour vraies erreurs TD
-    [Fix 7] _state_to_target   : index O(1), nettoyé dans smart_delete()
-    """
 
     def __init__(self, capacity: int, alpha: float = 0.6, beta: float = 0.4,
                  beta_increment: float = 0.0001,
@@ -230,13 +206,12 @@ class ReanalyzeBuffer(PrioritizedReplayBuffer):
         self.timestamps[traj_id] = self.current_step
         self.td_errors[traj_id] = 1.0
 
-        # [Fix 5] capacity//200 cohérent avec ~200 steps/épisode LunarLander
+       
         max_trajectories = max(10, self.capacity // 200)
         if len(self.trajectories) > max_trajectories:
             self.smart_delete(n=1)
 
     def sample(self, batch_size: int) -> Dict:
-        # [Fix 4] méthode manquante — retourne les reanalyzed_targets
         batch = super().sample(batch_size)
 
         if len(self._state_to_target) == 0:
@@ -275,12 +250,11 @@ class ReanalyzeBuffer(PrioritizedReplayBuffer):
                 for t, step in enumerate(self.trajectories[idx]):
                     if t < len(targets):
                         step['target'] = float(targets[t])
-                        # [Fix 7] mettre à jour l'index rapide
+                       
                         key = step['state'].tobytes()
                         self._state_to_target[key] = float(targets[t])
 
     def update_td_errors(self, traj_id: int, td_error: float) -> None:
-        # [Fix 6] appelée depuis train.py après chaque update agent
         if traj_id in self.td_errors:
             self.td_errors[traj_id] = float(abs(td_error))
 
@@ -315,7 +289,6 @@ class ReanalyzeBuffer(PrioritizedReplayBuffer):
         scores = {idx: self.compute_staleness_score(idx) for idx in self.trajectories}
         to_delete = sorted(scores, key=scores.get, reverse=True)[:n]
         for idx in to_delete:
-            # [Fix 7] nettoyer aussi _state_to_target
             if idx in self.trajectories:
                 for step in self.trajectories[idx]:
                     self._state_to_target.pop(step['state'].tobytes(), None)

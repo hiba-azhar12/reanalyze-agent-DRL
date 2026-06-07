@@ -1,18 +1,3 @@
-"""
-agent.py — Agent DQN et variantes
-
-CORRECTIONS FUSIONNEES des deux versions :
-  [C1] gradient clipping  : max_norm configurable depuis yaml via grad_clip
-                            defaut 10.0 pour DQN vanilla, 1.0 pour PER/Reanalyze
-  [C2] soft update EMA    : target network via EMA si use_soft_update=True
-  [C3] soft_reset alpha   : alpha croissant avec le temps
-  [C4] valid_mask         : ignore les targets reanalysees a 0.0
-  [C5] reanalyze_alpha    : defaut 0.8
-  [C6] retour tuple       : retourne (loss, mean_td_error)
-  [C7] update_td_errors   : appele directement dans update()
-
-Reference : Mnih et al. (2015), Schaul et al. (2016), D'Oro et al. (2023)
-"""
 
 import torch
 import torch.nn as nn
@@ -63,9 +48,7 @@ class DQNAgent:
         self.use_soft_update = config.get('use_soft_update', False)
         self.tau             = config.get('tau', 0.005)
 
-        # [C1] grad_clip configurable depuis yaml
-        # DQN vanilla : grad_clip=10.0 (original Mnih et al.)
-        # PER/Reanalyze : grad_clip=1.0 (plus stable avec IS weights)
+        
         self.grad_clip = config.get('grad_clip', 10.0)
         
         ##here efficientZero
@@ -82,7 +65,6 @@ class DQNAgent:
             self.latent_model = LatentModel(
                 obs_dim, action_dim, latent_dim=latent_dim
             ).to(self.device)
-            # Optimizer inclut toujours latent_model si présent
             self.optimizer = optim.Adam(
                 list(self.online_net.parameters()) +
                 list(self.latent_model.parameters()),
@@ -148,7 +130,7 @@ class DQNAgent:
         #==========================================
         self.optimizer.zero_grad()
         loss.backward()
-        # [C1] grad_clip depuis config — pas hardcode
+        
         params_to_clip = list(self.online_net.parameters())
         if self.latent_model is not None:
             params_to_clip += list(self.latent_model.parameters())

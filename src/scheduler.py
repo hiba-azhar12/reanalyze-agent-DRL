@@ -1,17 +1,3 @@
-"""
-scheduler.py — Scheduler de réanalyse
-
-FUSION Doc40 + Doc41 — toutes les corrections :
-  [S1] step_count      : skip si LAZY (Doc40)
-  [S2] TRIGGERED       : old_params mis à jour SEULEMENT après réanalyse (Doc40)
-  [S3] get_k_steps()   : _last_k_used tracké pour log_stats (Doc40)
-  [S4] reanalyze_ratio : 0.25 CPU / 0.8 GPU (Doc40)
-  [S5] log_stats()     : loggue _last_k_used (Doc40)
-  [+]  period défaut   : 1000 au lieu de 100 (Doc41) — 500 réanalyses/500k steps
-
-Référence : ReZero (ICLR 2025), Adaptive Offline Data Replay (ICLR 2024)
-"""
-
 import numpy as np
 from enum import Enum
 from typing import Optional
@@ -31,16 +17,12 @@ class ReanalyzeScheduler:
         self.config = config
         self.step_count = 0
 
-        # TRIGGERED
+        
         self.old_policy_params = None
         self.kl_threshold = config.get('kl_threshold', 0.1)
 
-        # PERIODIC — [fusion Doc41] défaut 1000 au lieu de 100
-        # 100 → 5000 réanalyses/500k steps (trop coûteux)
-        # 1000 → 500 réanalyses/500k steps (raisonnable)
-        self.period = config.get('period', 1000)
+       self.period = config.get('period', 1000)
 
-        # [S4] ratio adaptatif : 0.25 sur CPU, 0.8 sur GPU (comme MuZero)
         device = config.get('device', 'cpu')
         default_ratio = 0.25 if device == 'cpu' else 0.8
         self.reanalyze_ratio = config.get('reanalyze_ratio', default_ratio)
@@ -49,18 +31,10 @@ class ReanalyzeScheduler:
         self.k_adaptive = (self.k_steps == 'adaptive')
 
         self.n_reanalyzes = 0
-        # [S3] tracker la dernière valeur k utilisée pour log_stats
         self._last_k_used = self.k_steps if not self.k_adaptive else 5
 
     def should_reanalyze(self, agent=None) -> bool:
-        """
-        CONTINUOUS : probabilité reanalyze_ratio
-        PERIODIC   : toutes les N transitions (défaut 1000)
-        TRIGGERED  : quand politique a suffisamment changé (KL > seuil)
-        LAZY       : toujours False — géré dans train.py
-        """
-        # [S1] ne pas incrémenter step_count en mode LAZY
-        # (la décision est prise ailleurs, pas ici)
+
         if self.mode != ReanalyzeMode.LAZY:
             self.step_count += 1
 
@@ -83,9 +57,6 @@ class ReanalyzeScheduler:
             decision = kl > self.kl_threshold
             if decision:
                 self.n_reanalyzes += 1
-                # [S2] old_params mis à jour SEULEMENT quand on réanalyse
-                # Si mis à jour à chaque step → distance toujours ~0
-                # → trigger ne se déclenche jamais sur changement graduel
                 self.old_policy_params = agent.get_policy_params()
             return decision
 
@@ -95,10 +66,7 @@ class ReanalyzeScheduler:
         return False
 
     def get_k_steps(self, traj_length: Optional[int] = None) -> int:
-        """
-        [S3] Retourne k et le stocke dans _last_k_used pour log_stats.
-        traj_length passé depuis train.py pour mode adaptatif.
-        """
+        
         if not self.k_adaptive:
             self._last_k_used = int(self.k_steps)
             return self._last_k_used
@@ -121,11 +89,7 @@ class ReanalyzeScheduler:
         return self.config.get('n_trajectories', 16)
 
     def _compute_kl_distance(self, agent) -> float:
-        """
-        Distance L2 normalisée comme proxy de KL divergence.
-        [S2] old_policy_params initialisé ici au premier appel,
-        mais mis à jour uniquement dans should_reanalyze() après décision.
-        """
+        
         if not hasattr(agent, 'get_policy_params'):
             return 0.0
 
@@ -145,7 +109,6 @@ class ReanalyzeScheduler:
         return float(np.sqrt(total_distance / total_norm))
 
     def log_stats(self) -> dict:
-        # [S5] _last_k_used = vraie valeur utilisée (pas 'adaptive')
         return {
             'scheduler/mode':            self.mode.value,
             'scheduler/step':            self.step_count,
